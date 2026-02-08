@@ -1,5 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Routes, Route, useLocation } from 'react-router-dom'
 import * as d3 from 'd3'
+import { AnimatePresence, motion } from 'framer-motion'
+
+import Nav from './components/Nav.jsx'
+import Home from './pages/Home.jsx'
+import Projects from './pages/Projects.jsx'
+import Writing from './pages/Writing.jsx'
+import About from './pages/About.jsx'
+
 import './App.css'
 
 function useWindowSize() {
@@ -15,6 +24,18 @@ function useWindowSize() {
 export default function App() {
   const svgRef = useRef(null)
   const { w, h } = useWindowSize()
+  const location = useLocation()
+
+  const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 })
+  useEffect(() => {
+    const onMove = (e) => {
+      setPointer({ x: e.clientX / window.innerWidth, y: e.clientY / window.innerHeight })
+    }
+    window.addEventListener('mousemove', onMove, { passive: true })
+    return () => window.removeEventListener('mousemove', onMove)
+  }, [])
+
+  const seed = useMemo(() => 0.42, [])
 
   useEffect(() => {
     const svgEl = svgRef.current
@@ -25,23 +46,30 @@ export default function App() {
 
     const svg = d3.select(svgEl)
     svg.attr('viewBox', `0 0 ${width} ${height}`)
-
     svg.selectAll('*').remove()
 
     const defs = svg.append('defs')
+
+    // Glow filter
+    const filter = defs.append('filter').attr('id', 'glow')
+    filter.append('feGaussianBlur').attr('stdDeviation', '3.2').attr('result', 'coloredBlur')
+    const merge = filter.append('feMerge')
+    merge.append('feMergeNode').attr('in', 'coloredBlur')
+    merge.append('feMergeNode').attr('in', 'SourceGraphic')
+
+    // Background gradient that will parallax with pointer
     const grad = defs
-      .append('linearGradient')
+      .append('radialGradient')
       .attr('id', 'bg')
-      .attr('x1', '0%')
-      .attr('x2', '100%')
-      .attr('y1', '0%')
-      .attr('y2', '100%')
+      .attr('cx', '50%')
+      .attr('cy', '50%')
+      .attr('r', '70%')
 
-    grad.append('stop').attr('offset', '0%').attr('stop-color', '#0b1020')
-    grad.append('stop').attr('offset', '50%').attr('stop-color', '#0d1b2a')
-    grad.append('stop').attr('offset', '100%').attr('stop-color', '#0a0f1f')
+    grad.append('stop').attr('offset', '0%').attr('stop-color', '#132a53')
+    grad.append('stop').attr('offset', '45%').attr('stop-color', '#0d1b2a')
+    grad.append('stop').attr('offset', '100%').attr('stop-color', '#070a14')
 
-    svg
+    const bg = svg
       .append('rect')
       .attr('x', 0)
       .attr('y', 0)
@@ -49,37 +77,70 @@ export default function App() {
       .attr('height', height)
       .attr('fill', 'url(#bg)')
 
-    const N = Math.min(220, Math.floor((width * height) / 9000))
-    const rng = d3.randomNormal.source(d3.randomLcg(0.42))(0, 1)
+    // Particles
+    const N = Math.min(260, Math.floor((width * height) / 8000))
+    const rng = d3.randomNormal.source(d3.randomLcg(seed))(0, 1)
 
     const nodes = d3.range(N).map((i) => ({
       id: i,
       r: 1.2 + Math.random() * 2.8,
       x: width * (0.05 + 0.9 * Math.random()),
       y: height * (0.05 + 0.9 * Math.random()),
-      vx: rng() * 0.4,
-      vy: rng() * 0.4,
+      vx: rng() * 0.45,
+      vy: rng() * 0.45,
     }))
+
+    const gLinks = svg
+      .append('g')
+      .attr('stroke', '#7aa2ff')
+      .attr('stroke-opacity', 0.16)
+      .attr('stroke-width', 1)
 
     const circles = svg
       .append('g')
-      .attr('opacity', 0.9)
+      .attr('filter', 'url(#glow)')
       .selectAll('circle')
       .data(nodes)
       .enter()
       .append('circle')
       .attr('r', (d) => d.r)
       .attr('fill', '#8be9fd')
-      .attr('fill-opacity', 0.35)
+      .attr('fill-opacity', 0.42)
 
-    const links = svg
-      .append('g')
-      .attr('stroke', '#7aa2ff')
-      .attr('stroke-opacity', 0.12)
-      .attr('stroke-width', 1)
+    // Pointer attractor
+    const attract = (n, tx, ty) => {
+      const dx = tx - n.x
+      const dy = ty - n.y
+      const d2 = dx * dx + dy * dy
+      const k = 0.0008
+      n.vx += dx * k
+      n.vy += dy * k
+      // slight damping
+      n.vx *= 0.995
+      n.vy *= 0.995
+      // cap speed
+      const sp = Math.hypot(n.vx, n.vy)
+      if (sp > 1.4) {
+        n.vx = (n.vx / sp) * 1.4
+        n.vy = (n.vy / sp) * 1.4
+      }
+      return d2
+    }
 
+    let raf
     const tick = () => {
+      // Parallax background center
+      const cx = 35 + pointer.x * 30
+      const cy = 35 + pointer.y * 30
+      grad.attr('cx', `${cx}%`).attr('cy', `${cy}%`)
+      bg.attr('opacity', 1)
+
+      const tx = pointer.x * width
+      const ty = pointer.y * height
+
       for (const n of nodes) {
+        attract(n, tx, ty)
+
         n.x += n.vx
         n.y += n.vy
         if (n.x < 0 || n.x > width) n.vx *= -1
@@ -90,19 +151,21 @@ export default function App() {
 
       circles.attr('cx', (d) => d.x).attr('cy', (d) => d.y)
 
-      const maxLinks = Math.floor(N * 1.3)
+      // Dynamic links: sample pairs and draw those within a threshold
+      const maxLinks = Math.floor(N * 1.6)
       const segs = []
+      const thresh = Math.min(150 * 150, (width * width + height * height) / 210)
+
       for (let i = 0; i < maxLinks; i++) {
         const a = nodes[(i * 7) % N]
-        const b = nodes[(i * 19 + 11) % N]
+        const b = nodes[(i * 23 + 13) % N]
         const dx = a.x - b.x
         const dy = a.y - b.y
         const dist2 = dx * dx + dy * dy
-        const thresh = Math.min(140 * 140, (width * width + height * height) / 180)
-        if (dist2 < thresh) segs.push({ a, b })
+        if (dist2 < thresh) segs.push({ a, b, o: 1 - dist2 / thresh })
       }
 
-      const sel = links.selectAll('line').data(segs)
+      const sel = gLinks.selectAll('line').data(segs)
       sel
         .enter()
         .append('line')
@@ -111,48 +174,35 @@ export default function App() {
         .attr('y1', (d) => d.a.y)
         .attr('x2', (d) => d.b.x)
         .attr('y2', (d) => d.b.y)
+        .attr('stroke-opacity', (d) => 0.05 + d.o * 0.24)
       sel.exit().remove()
 
       raf = requestAnimationFrame(tick)
     }
 
-    let raf = requestAnimationFrame(tick)
+    raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [w, h])
+  }, [w, h, pointer.x, pointer.y, seed])
 
   return (
     <div className="app">
-      <svg ref={svgRef} className="bg" />
+      <svg ref={svgRef} className="bg" aria-hidden="true" />
 
-      <div className="content">
-        <div className="badge">Under construction</div>
-        <h1>Wen Jian</h1>
-        <p className="subtitle">Data science • AI engineering • data visualisation</p>
-
-        <div className="grid">
-          <div className="card">
-            <h3>Coming soon</h3>
-            <p>Interactive portfolio built with React + D3.</p>
-          </div>
-          <div className="card">
-            <h3>Focus</h3>
-            <ul>
-              <li>Applied ML/LLM systems</li>
-              <li>Reliable pipelines & evaluation</li>
-              <li>Animated, decision-grade visualisations</li>
-            </ul>
-          </div>
-          <div className="card">
-            <h3>Links</h3>
-            <p>
-              <a href="https://github.com/wjivan" target="_blank" rel="noreferrer">GitHub</a>
-              {' · '}
-              <a href="mailto:wen.jian@cantab.net">Email</a>
-            </p>
-          </div>
+      <div className="chrome">
+        <Nav />
+        <div className="shell">
+          <AnimatePresence mode="wait">
+            <motion.div key={location.pathname} className="route">
+              <Routes location={location}>
+                <Route path="/" element={<Home />} />
+                <Route path="/projects" element={<Projects />} />
+                <Route path="/writing" element={<Writing />} />
+                <Route path="/about" element={<About />} />
+                <Route path="*" element={<Home />} />
+              </Routes>
+            </motion.div>
+          </AnimatePresence>
         </div>
-
-        <p className="foot">If you’re seeing this, the new site is deploying — content will follow.</p>
       </div>
     </div>
   )
